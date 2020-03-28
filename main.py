@@ -1,5 +1,7 @@
 import speech_recognition as sr
 import playsound
+import time
+from xml.etree import ElementTree
 from gtts import gTTS
 from io import BytesIO
 from io import StringIO
@@ -17,8 +19,8 @@ import time, docx
 import sys
 import cv2
 import face_recognition
+import azure.cognitiveservices.speech as speechsdk
 
-num = 1
 exam_time = time.time()
 review = [False,False,False]
 uri = "mongodb://6d0d9a0d-0ee0-4-231-b9ee:DFKoNQdEIptsjmR5eAQlJO64FlQryGYipb4BTeb4CXh4uKI6OBCU93c6kaLM2AP2IGSgrRkAkcc91J1nK1QwUA==@6d0d9a0d-0ee0-4-231-b9ee.documents.azure.com:10255/?ssl=true&replicaSet=globaldb"
@@ -27,6 +29,56 @@ mydb = myclient["vscribe"]
 mycol = mydb["qna"]
 marks= ["2","5","1"]
 
+class TextToSpeech(object):
+    def __init__(self):
+        self.subscription_key =  'a133a3b377524aeda3338a66d761d520'
+
+    def speaks(self, say):
+        self.tts = say
+        self.timestr = time.strftime("%Y%m%d-%H%M")
+        self.access_token = None
+
+    def get_token(self):
+        fetch_token_url = "https://southeastasia.api.cognitive.microsoft.com/sts/v1.0/issueToken"
+        headers = {
+            'Ocp-Apim-Subscription-Key': self.subscription_key
+        }
+        response = requests.post(fetch_token_url, headers=headers)
+        self.access_token = str(response.text)
+
+    def save_audio(self):
+        base_url = 'https://southeastasia.tts.speech.microsoft.com/'
+        path = 'cognitiveservices/v1'
+        constructed_url = base_url + path
+        headers = {
+            'Authorization': 'Bearer ' + self.access_token,
+            'Content-Type': 'application/ssml+xml',
+            'X-Microsoft-OutputFormat': 'riff-24khz-16bit-mono-pcm',
+            'User-Agent': 'vscribetts'
+        }
+        xml_body = ElementTree.Element('speak', version='1.0')
+        xml_body.set('{http://www.w3.org/XML/1998/namespace}lang', 'en-us')
+        voice = ElementTree.SubElement(xml_body, 'voice')
+        voice.set('{http://www.w3.org/XML/1998/namespace}lang', 'en-US')
+        voice.set(
+            'name', 'Microsoft Server Speech Text to Speech Voice (en-US, Guy24kRUS)')
+        voice.text = self.tts
+        body = ElementTree.tostring(xml_body)
+
+        response = requests.post(constructed_url, headers=headers, data=body)
+        if response.status_code == 200:
+            file = 'sample-' + self.timestr + '.wav'
+            with open(file, 'wb') as audio:
+                audio.write(response.content)
+                print("V-Scribe : " + self.tts)
+                return file
+        else:
+            print("\nStatus code: " + str(response.status_code) +
+                  "\nSomething went wrong. Check your subscription key and headers.\n")
+            return '0'   
+
+objtts = TextToSpeech()     
+
 def punc(text):
     url = "http://bark.phon.ioc.ee/punctuator"
     payload = {"text" : text}
@@ -34,31 +86,36 @@ def punc(text):
     return response.text
 
 def scribe_speaks(output):
-    global num
-    num +=1
-    print("V-Scribe : ", output)
-    toSpeak = gTTS(text=output, lang='en-US', slow=False)
-    file = str(num)+".mp3"
-    toSpeak.save(file)
+    global objtts
+    objtts.speaks(output)
+    objtts.get_token()
+    file = objtts.save_audio()
     playsound.playsound(file, True)
     os.remove(file)
 
 def get_audio(time_limit = None,isstop = False):
-    r = sr.Recognizer()
-    audio = ''
-    with sr.Microphone() as source:
-        print("Begin speaking")
-        audio = r.listen(source, phrase_time_limit=time_limit)
-    print("Stop speaking")
-    try:
-        text = r.recognize_google(audio,language='en-US')
-        print("You : ", text)
-        return text
-    except:
-        if isstop == False:
-            scribe_speaks("Could not understand your audio, PLease try again!")
-        return '0'
+    speech_key, service_region = "a133a3b377524aeda3338a66d761d520", "southeastasia"
+    speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=service_region)
+    speech_recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config)
 
+    print("Say something...")
+    try:
+        result = speech_recognizer.recognize_once()
+        if result.reason == speechsdk.ResultReason.RecognizedSpeech:
+            print("You: {}".format(result.text))
+            return result
+        elif result.reason == speechsdk.ResultReason.NoMatch:
+            print("No speech could be recognized: {}".format(result.no_match_details))
+            return '0'
+        elif result.reason == speechsdk.ResultReason.Canceled:
+            cancellation_details = result.cancellation_details
+            print("Speech Recognition canceled: {}".format(cancellation_details.reason))
+            if cancellation_details.reason == speechsdk.CancellationReason.Error:
+                print("Error details: {}".format(cancellation_details.error_details))
+            return '0'
+    except:
+        return '0'
+            
 def mark(qno):
     review[qno] = True
 
